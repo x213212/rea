@@ -10,7 +10,10 @@ import parser from "stream-json/parser.js";
 import streamValues from "stream-json/streamers/stream-values.js";
 import streamArray from "stream-json/streamers/stream-array.js";
 
-import { RegularFileChangedError } from "../filesystem/RegularFile.js";
+import {
+  assertRegularFileActive,
+  RegularFileChangedError,
+} from "../filesystem/RegularFile.js";
 import type { ArtifactResourceScope } from "../artifacts/ArtifactResourceScope.js";
 import { withRegularFile } from "./RegularFileRead.js";
 import {
@@ -84,7 +87,7 @@ export const readJsonObjectFile = (
           for (const members of scans)
             for (const [key, member] of members) {
               if (!Object.hasOwn(value, key)) continue;
-              signal?.throwIfAborted();
+              assertRegularFileActive(signal);
               member.begin();
               const selected: unknown = Reflect.get(value, key);
               if (member.mode === "array" && !Array.isArray(selected)) {
@@ -97,7 +100,7 @@ export const readJsonObjectFile = (
               Array.isArray(selected)
                 ? selected
                 : [selected]) {
-                signal?.throwIfAborted();
+                assertRegularFileActive(signal);
                 try {
                   await member.accept(item);
                 } catch (cause: unknown) {
@@ -522,14 +525,14 @@ async function* decodedChunks(
   const bytes = Buffer.allocUnsafe(READ_CHUNK_BYTES);
   let observedBytes = 0;
   while (true) {
-    signal?.throwIfAborted();
+    assertRegularFileActive(signal);
     const read = await handle.read(
       bytes,
       0,
       Math.min(bytes.length, admittedBytes - observedBytes + 1),
       observedBytes,
     );
-    signal?.throwIfAborted();
+    assertRegularFileActive(signal);
     if (read.bytesRead === 0) break;
     observedBytes += read.bytesRead;
     if (observedBytes > admittedBytes) throw new RegularFileChangedError(path);
@@ -556,9 +559,9 @@ const readPrefix = async (
   const bytes = Buffer.allocUnsafe(size);
   let offset = 0;
   while (offset < bytes.length) {
-    signal?.throwIfAborted();
+    assertRegularFileActive(signal);
     const read = await handle.read(bytes, offset, bytes.length - offset, null);
-    signal?.throwIfAborted();
+    assertRegularFileActive(signal);
     if (read.bytesRead === 0)
       return { bytes: bytes.subarray(0, offset), complete: true };
     offset += read.bytesRead;

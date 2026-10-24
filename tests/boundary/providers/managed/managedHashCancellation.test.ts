@@ -11,16 +11,15 @@ import { RegularFileCleanupFailure } from "../../../../src/application/RegularFi
 import { OwnedFileHandle } from "../../../../src/filesystem/OwnedFileHandle.js";
 import { createTestTempDirectory } from "../../../fixtures/temporaryDirectory.js";
 
-it.each([
-  { denyClose: false, reasonKind: "plain" },
-  { denyClose: true, reasonKind: "plain" },
-  { denyClose: false, reasonKind: "filesystem" },
-  { denyClose: true, reasonKind: "filesystem" },
-  { denyClose: false, reasonKind: "cleanup" },
-  { denyClose: true, reasonKind: "cleanup" },
-])(
-  "cancels a cached managed source hash and recovers its exact owner (close denied: $denyClose, reason: $reasonKind)",
-  async ({ denyClose, reasonKind }) => {
+it.each(
+  [false, true].flatMap((cached) =>
+    ["plain", "filesystem", "cleanup"].flatMap((reasonKind) =>
+      [false, true].map((denyClose) => ({ cached, denyClose, reasonKind })),
+    ),
+  ),
+)(
+  "cancels a managed source read and recovers its exact owner (cached: $cached, close denied: $denyClose, reason: $reasonKind)",
+  async ({ cached, denyClose, reasonKind }) => {
     const directory = await createTestTempDirectory("rea-managed-hash-cancel-");
     const path = join(directory, "fixture.exe");
     await writeFile(
@@ -30,8 +29,10 @@ it.each([
     const parsed = await parseBinaryTarget(path);
     if (!parsed.ok) throw parsed.error;
     const client = new ManagedStaticProvider().createClient(parsed.value);
-    const initial = await client.execute("inspect_managed_artifact", {});
-    if (!initial.ok) throw initial.error;
+    if (cached) {
+      const initial = await client.execute("inspect_managed_artifact", {});
+      if (!initial.ok) throw initial.error;
+    }
 
     const admitted = await open(path, "r");
     const prototype = Object.getPrototypeOf(admitted) as FileHandle;
@@ -92,6 +93,10 @@ it.each([
           code: "cleanup_incomplete",
           details: { diagnostics: { primary_error: { code: "cancelled" } } },
         });
+        expect(cancelled.error.cause).toBeInstanceOf(AggregateError);
+        if (!(cancelled.error.cause instanceof AggregateError))
+          throw new Error("Missing managed read and cleanup failures");
+        expect(cancelled.error.cause.errors[0].cause).toBe(reason);
         expect(cancelledHandle?.fd).toBeGreaterThanOrEqual(0);
         const readsBeforeRetry = readCount;
         const blocked = await client.execute("inspect_managed_members", {});
@@ -129,51 +134,56 @@ it.each([
   },
 );
 
-it("preserves an independent read failure when cancellation races with it", async () => {
-  const directory = await createTestTempDirectory(
-    "rea-managed-hash-read-failure-",
-  );
-  const path = join(directory, "fixture.exe");
-  await writeFile(path, buildManagedPeFixture());
-  const parsed = await parseBinaryTarget(path);
-  if (!parsed.ok) throw parsed.error;
-  const client = new ManagedStaticProvider().createClient(parsed.value);
-  const initial = await client.execute("inspect_managed_artifact", {});
-  if (!initial.ok) throw initial.error;
-  const admitted = await open(path, "r");
-  const prototype = Object.getPrototypeOf(admitted) as FileHandle;
-  await admitted.close();
-  const originalRead = prototype.read;
-  const controller = new AbortController();
-  const failure = Object.assign(new Error("fixture source read failure"), {
-    code: "EACCES",
-  });
-  let failedHandle: FileHandle | undefined;
-  const read = vi.spyOn(prototype, "read").mockImplementation(async function (
-    this: FileHandle,
-    ...args
-  ) {
-    await Reflect.apply(originalRead, this, args);
-    failedHandle = this;
-    controller.abort(new Error("independent cancellation"));
-    throw failure;
-  });
-  try {
-    const result = await client.execute(
-      "inspect_managed_members",
-      {},
-      {
-        signal: controller.signal,
-      },
+it.each([false, true])(
+  "preserves an independent read failure when cancellation races with it (cached: %s)",
+  async (cached) => {
+    const directory = await createTestTempDirectory(
+      "rea-managed-hash-read-failure-",
     );
-    if (result.ok) throw new Error("Failed managed hashing succeeded");
-    expect(projectAnalysisError(result.error)).toMatchObject({
-      code: "access_denied",
+    const path = join(directory, "fixture.exe");
+    await writeFile(path, buildManagedPeFixture());
+    const parsed = await parseBinaryTarget(path);
+    if (!parsed.ok) throw parsed.error;
+    const client = new ManagedStaticProvider().createClient(parsed.value);
+    if (cached) {
+      const initial = await client.execute("inspect_managed_artifact", {});
+      if (!initial.ok) throw initial.error;
+    }
+    const admitted = await open(path, "r");
+    const prototype = Object.getPrototypeOf(admitted) as FileHandle;
+    await admitted.close();
+    const originalRead = prototype.read;
+    const controller = new AbortController();
+    const failure = Object.assign(new Error("fixture source read failure"), {
+      code: "EACCES",
     });
-    expect(result.error.cause).toBe(failure);
-    expect(failedHandle?.fd).toBe(-1);
-  } finally {
-    read.mockRestore();
-    expect(await client.close()).toMatchObject({ ok: true });
-  }
-});
+    let failedHandle: FileHandle | undefined;
+    const read = vi.spyOn(prototype, "read").mockImplementation(async function (
+      this: FileHandle,
+      ...args
+    ) {
+      await Reflect.apply(originalRead, this, args);
+      failedHandle = this;
+      controller.abort(new Error("independent cancellation"));
+      throw failure;
+    });
+    try {
+      const result = await client.execute(
+        "inspect_managed_members",
+        {},
+        {
+          signal: controller.signal,
+        },
+      );
+      if (result.ok) throw new Error("Failed managed hashing succeeded");
+      expect(projectAnalysisError(result.error)).toMatchObject({
+        code: "access_denied",
+      });
+      expect(result.error.cause).toBe(failure);
+      expect(failedHandle?.fd).toBe(-1);
+    } finally {
+      read.mockRestore();
+      expect(await client.close()).toMatchObject({ ok: true });
+    }
+  },
+);

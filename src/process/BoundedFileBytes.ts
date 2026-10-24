@@ -1,5 +1,7 @@
 import type { FileHandle } from "node:fs/promises";
 
+import { assertRegularFileActive } from "../filesystem/RegularFile.js";
+
 /** Read through EOF, returning undefined on overflow; leave the handle open. */
 export const readBoundedFileBytes = async (
   handle: FileHandle,
@@ -21,7 +23,7 @@ export const readBoundedFileBytes = async (
     const buffer = Buffer.allocUnsafe(Math.min(64 * 1_024, maxBytes + 1));
     let total = 0;
     for (;;) {
-      signal?.throwIfAborted();
+      assertRegularFileActive(signal);
       const { bytesRead } = await handle.read(
         buffer,
         0,
@@ -38,7 +40,7 @@ export const readBoundedFileBytes = async (
   if (expectedSize === 0) return buffer;
   let total = 0;
   for (;;) {
-    signal?.throwIfAborted();
+    assertRegularFileActive(signal);
     const { bytesRead } = await handle.read(
       buffer,
       total,

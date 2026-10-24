@@ -18,7 +18,11 @@ import {
 } from "../domain/analysisErrorCore.js";
 import { EvidenceIntegrityError } from "../domain/evidenceErrors.js";
 import { ProviderCleanupError } from "../domain/providerCleanupError.js";
-import { RegularFileChangedError } from "../filesystem/RegularFile.js";
+import {
+  assertRegularFileActive,
+  RegularFileChangedError,
+  RegularFileOperationCancelled,
+} from "../filesystem/RegularFile.js";
 import { readBoundedFileBytes } from "../process/BoundedFileBytes.js";
 
 // Managed static inspection retains the complete PE snapshot in memory.
@@ -62,7 +66,7 @@ export const readManagedSnapshot = async (
         signal,
       );
       if (bytes === undefined) throw managedSnapshotCapacityError(operation);
-      signal?.throwIfAborted();
+      assertRegularFileActive(signal);
       return {
         byteLength: bytes.length,
         sha256: createHash("sha256").update(bytes).digest("hex"),
@@ -89,14 +93,14 @@ export const hashManagedSource = async (
       let byteLength = 0;
       const chunk = Buffer.allocUnsafe(64 * 1024);
       for (;;) {
-        signal?.throwIfAborted();
+        assertRegularFileActive(signal);
         const { bytesRead } = await handle.read(
           chunk,
           0,
           Math.min(chunk.length, MAX_MANAGED_SNAPSHOT_BYTES - byteLength + 1),
           null,
         );
-        signal?.throwIfAborted();
+        assertRegularFileActive(signal);
         if (bytesRead === 0) break;
         if (bytesRead > MAX_MANAGED_SNAPSHOT_BYTES - byteLength)
           throw managedSnapshotCapacityError(operation);
@@ -185,6 +189,8 @@ const normalizeReadFailure = (
 ): unknown => {
   if (signal?.aborted === true && cause === signal.reason)
     return new AnalysisCancelledError(operation, { cause });
+  if (cause instanceof RegularFileOperationCancelled)
+    return new AnalysisCancelledError(operation, { cause: cause.reason });
   if (cause instanceof RegularFileChangedError)
     return new EvidenceIntegrityError(
       `Managed source changed while ${operation} was reading ${path}.`,

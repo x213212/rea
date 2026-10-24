@@ -153,7 +153,7 @@ it("waits for an aborted pre-session hash before retrying its late close owner",
     const preview = await previewWork;
     expect(preview).toMatchObject({
       ok: false,
-      error: { _tag: "ProviderAdapterError", cleanupIncomplete: true },
+      error: { _tag: "AnalysisCancelledError", cleanupIncomplete: true },
     });
 
     const firstClose = await closing;
